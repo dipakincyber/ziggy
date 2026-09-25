@@ -16,5 +16,4 @@ __all__ = [
     "InvalidInstallationError",
     "ModuleAlreadyInstalledError",
     "ModuleInstaller",
-    "InstallationResult",
 ]
