@@ -1,8 +1,12 @@
 import pytest
 
 from core.api import get_core_api_version
+from core.commands import CommandDefinition
+from core.dispatch import DispatchRequest
 from core.modules.manager import ModuleManager, ModuleRegistrationError
 from core.modules.manifest import ModuleCompatibility, ModuleManifest
+from core.modules.permissions import ModulePermission
+from core.policy import PolicyDecision, PolicyRequest, PolicyRule
 from core.runtime import CoreRuntime
 
 
@@ -315,3 +319,264 @@ def test_runtime_event_can_be_exported_through_export_service():
     assert '"event_type": "module.started"' in result.content
     assert '"source": "security"' in result.content
     assert '"version": "1.0.0"' in result.content
+
+
+def test_runtime_command_can_be_registered_and_bound():
+    runtime = CoreRuntime()
+
+    command = CommandDefinition(
+        name="security.scan",
+        module="security",
+        description="Run a security scan.",
+        permissions=("filesystem.read",),
+    )
+
+    runtime.command_registry.register(command)
+
+    calls = []
+
+    def scan_handler(path):
+        calls.append(path)
+        return {"scanned": path}
+
+    runtime.dispatcher.bind(
+        "security.scan",
+        scan_handler,
+    )
+
+    request = DispatchRequest(
+        command="security.scan",
+        arguments=("/tmp/evidence.txt",),
+    )
+
+    result = runtime.dispatcher.dispatch(request)
+
+    assert runtime.command_registry.contains("security.scan")
+    assert runtime.dispatcher.contains("security.scan")
+    assert calls == ["/tmp/evidence.txt"]
+    assert result.value == {
+        "scanned": "/tmp/evidence.txt",
+    }
+
+
+def test_runtime_command_flow_requires_permission_and_policy_allow():
+    runtime = CoreRuntime()
+
+    command = CommandDefinition(
+        name="security.scan",
+        module="security",
+        description="Run a security scan.",
+        permissions=("filesystem.read",),
+    )
+
+    runtime.command_registry.register(command)
+
+    calls = []
+
+    def scan_handler(path):
+        calls.append(path)
+        return {"scanned": path}
+
+    runtime.dispatcher.bind(
+        "security.scan",
+        scan_handler,
+    )
+
+    runtime.permission_manager.grant(
+        ModulePermission.FILESYSTEM_READ,
+    )
+
+    runtime.policy.add_rule(
+        PolicyRule(
+            module="security",
+            action="read",
+            resource="/tmp/evidence.txt",
+            decision=PolicyDecision.ALLOW,
+        )
+    )
+
+    request = PolicyRequest(
+        module="security",
+        action="read",
+        resource="/tmp/evidence.txt",
+    )
+
+    assert runtime.permission_manager.is_allowed(
+        ModulePermission.FILESYSTEM_READ,
+    )
+    assert runtime.policy.evaluate(request) == PolicyDecision.ALLOW
+
+    result = runtime.dispatcher.dispatch(
+        DispatchRequest(
+            command="security.scan",
+            arguments=("/tmp/evidence.txt",),
+        )
+    )
+
+    assert result.value == {
+        "scanned": "/tmp/evidence.txt",
+    }
+    assert calls == ["/tmp/evidence.txt"]
+
+
+def test_runtime_command_flow_does_not_dispatch_without_permission():
+    runtime = CoreRuntime()
+
+    command = CommandDefinition(
+        name="security.scan",
+        module="security",
+        description="Run a security scan.",
+        permissions=("filesystem.read",),
+    )
+
+    runtime.command_registry.register(command)
+
+    calls = []
+
+    def scan_handler(path):
+        calls.append(path)
+        return {"scanned": path}
+
+    runtime.dispatcher.bind(
+        "security.scan",
+        scan_handler,
+    )
+
+    runtime.policy.add_rule(
+        PolicyRule(
+            module="security",
+            action="read",
+            resource="/tmp/evidence.txt",
+            decision=PolicyDecision.ALLOW,
+        )
+    )
+
+    request = PolicyRequest(
+        module="security",
+        action="read",
+        resource="/tmp/evidence.txt",
+    )
+
+    permission_allowed = runtime.permission_manager.is_allowed(
+        ModulePermission.FILESYSTEM_READ,
+    )
+    policy_decision = runtime.policy.evaluate(request)
+
+    if not permission_allowed or policy_decision != PolicyDecision.ALLOW:
+        result = None
+    else:
+        result = runtime.dispatcher.dispatch(
+            DispatchRequest(
+                command="security.scan",
+                arguments=("/tmp/evidence.txt",),
+            )
+        )
+
+    assert permission_allowed is False
+    assert policy_decision == PolicyDecision.ALLOW
+    assert result is None
+    assert calls == []
+
+
+def test_runtime_command_flow_does_not_dispatch_when_policy_denies():
+    runtime = CoreRuntime()
+
+    command = CommandDefinition(
+        name="security.scan",
+        module="security",
+        description="Run a security scan.",
+        permissions=("filesystem.read",),
+    )
+
+    runtime.command_registry.register(command)
+
+    calls = []
+
+    def scan_handler(path):
+        calls.append(path)
+        return {"scanned": path}
+
+    runtime.dispatcher.bind(
+        "security.scan",
+        scan_handler,
+    )
+
+    runtime.permission_manager.grant(
+        ModulePermission.FILESYSTEM_READ,
+    )
+
+    runtime.policy.add_rule(
+        PolicyRule(
+            module="security",
+            action="read",
+            resource="/tmp/evidence.txt",
+            decision=PolicyDecision.DENY,
+        )
+    )
+
+    request = PolicyRequest(
+        module="security",
+        action="read",
+        resource="/tmp/evidence.txt",
+    )
+
+    permission_allowed = runtime.permission_manager.is_allowed(
+        ModulePermission.FILESYSTEM_READ,
+    )
+    policy_decision = runtime.policy.evaluate(request)
+
+    if not permission_allowed or policy_decision != PolicyDecision.ALLOW:
+        result = None
+    else:
+        result = runtime.dispatcher.dispatch(
+            DispatchRequest(
+                command="security.scan",
+                arguments=("/tmp/evidence.txt",),
+            )
+        )
+
+    assert permission_allowed is True
+    assert policy_decision == PolicyDecision.DENY
+    assert result is None
+    assert calls == []
+
+
+def test_unregistering_command_does_not_remove_permission_or_policy_state():
+    runtime = CoreRuntime()
+
+    command = CommandDefinition(
+        name="security.scan",
+        module="security",
+        description="Run a security scan.",
+        permissions=("filesystem.read",),
+    )
+
+    runtime.command_registry.register(command)
+
+    runtime.permission_manager.grant(
+        ModulePermission.FILESYSTEM_READ,
+    )
+
+    rule = PolicyRule(
+        module="security",
+        action="read",
+        resource="/tmp/evidence.txt",
+        decision=PolicyDecision.ALLOW,
+    )
+
+    runtime.policy.add_rule(rule)
+
+    runtime.command_registry.unregister("security.scan")
+
+    assert runtime.command_registry.contains("security.scan") is False
+    assert runtime.permission_manager.is_allowed(
+        ModulePermission.FILESYSTEM_READ,
+    )
+    assert runtime.policy.rules() == (rule,)
+    assert runtime.policy.evaluate(
+        PolicyRequest(
+            module="security",
+            action="read",
+            resource="/tmp/evidence.txt",
+        )
+    ) == PolicyDecision.ALLOW
