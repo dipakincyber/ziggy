@@ -187,3 +187,131 @@ def test_revoking_permission_does_not_modify_policy_rules():
     )
 
     assert runtime.policy.evaluate(request) is PolicyDecision.ALLOW
+
+
+def test_runtime_event_bus_can_drive_notification_service():
+    runtime = CoreRuntime()
+
+    received = []
+
+    def notify_from_event(event):
+        received.append(event)
+        runtime.notifications.success(
+            source=event.source,
+            title="Module Started",
+            message=f"{event.source} started.",
+            metadata={"event_type": event.event_type},
+        )
+
+    runtime.event_bus.subscribe(
+        "module.started",
+        notify_from_event,
+    )
+
+    event = runtime.event_bus.create_event(
+        event_type="module.started",
+        source="security",
+        payload={"version": "1.0.0"},
+    )
+
+    runtime.event_bus.publish(event)
+
+    assert received == [event]
+    assert runtime.notifications.count() == 1
+
+    notification = runtime.notifications.list()[0]
+
+    assert notification.source == "security"
+    assert notification.title == "Module Started"
+    assert notification.message == "security started."
+    assert notification.metadata == {
+        "event_type": "module.started",
+    }
+
+
+def test_runtime_event_bus_delivers_event_to_multiple_subscribers():
+    runtime = CoreRuntime()
+
+    received = []
+
+    def first_handler(event):
+        received.append(("first", event))
+
+    def second_handler(event):
+        received.append(("second", event))
+
+    runtime.event_bus.subscribe(
+        "module.started",
+        first_handler,
+    )
+    runtime.event_bus.subscribe(
+        "module.started",
+        second_handler,
+    )
+
+    event = runtime.event_bus.create_event(
+        event_type="module.started",
+        source="network",
+        payload={"interface": "wlan0"},
+    )
+
+    runtime.event_bus.publish(event)
+
+    assert received == [
+        ("first", event),
+        ("second", event),
+    ]
+
+
+def test_runtime_event_bus_isolates_failing_subscriber():
+    runtime = CoreRuntime()
+
+    received = []
+
+    def failing_handler(event):
+        raise RuntimeError("subscriber failure")
+
+    def working_handler(event):
+        received.append(event)
+
+    runtime.event_bus.subscribe(
+        "module.alert",
+        failing_handler,
+    )
+    runtime.event_bus.subscribe(
+        "module.alert",
+        working_handler,
+    )
+
+    event = runtime.event_bus.create_event(
+        event_type="module.alert",
+        source="security",
+        payload={"severity": "high"},
+    )
+
+    runtime.event_bus.publish(event)
+
+    assert received == [event]
+
+
+def test_runtime_event_can_be_exported_through_export_service():
+    runtime = CoreRuntime()
+
+    event = runtime.event_bus.create_event(
+        event_type="module.started",
+        source="security",
+        payload={"version": "1.0.0"},
+    )
+
+    export_data = {
+        "event_type": event.event_type,
+        "source": event.source,
+        "payload": event.payload,
+    }
+
+    result = runtime.export.json(export_data)
+
+    assert result.format.value == "json"
+    assert '"event_type": "module.started"' in result.content
+    assert '"source": "security"' in result.content
+    assert '"version": "1.0.0"' in result.content
