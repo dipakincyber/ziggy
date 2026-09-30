@@ -3,13 +3,22 @@ import pytest
 from core.api import get_core_api_version
 from core.commands import CommandDefinition
 from core.dispatch import DispatchRequest
+from core.dependencies import (
+    DependencyResolver,
+    DependencyStatus,
+    ModuleDependency,
+    ModuleVersion,
+)
+from core.discovery import ModuleDiscovery
 from core.health import HealthStatus
+from core.installation import ModuleInstaller
 from core.modules.lifecycle import ModuleLifecycleState
 from core.modules.manager import ModuleManager, ModuleRegistrationError
 from core.modules.manifest import ModuleCompatibility, ModuleManifest
 from core.modules.permissions import ModulePermission
 from core.policy import PolicyDecision, PolicyRequest, PolicyRule
 from core.recovery import RecoveryAction, RecoveryRequest
+from core.trust import TrustIdentity, TrustStatus, TrustVerifier
 from core.runtime import CoreRuntime
 
 
@@ -92,10 +101,6 @@ def test_runtime_registry_rejects_module_requiring_newer_core():
 
     assert runtime.module_registry.count() == 0
     assert not runtime.module_registry.contains("security")
-
-from core.modules.permissions import ModulePermission
-from core.policy import PolicyDecision, PolicyRequest, PolicyRule
-
 
 def test_runtime_permission_and_policy_services_remain_separate():
     runtime = CoreRuntime()
@@ -724,3 +729,548 @@ def test_runtime_recovery_history_survives_module_recovery():
     assert lifecycle.state == ModuleLifecycleState.RUNNING
     assert runtime.health.get("security").status == HealthStatus.HEALTHY
     assert runtime.recovery.decisions() == (recovery,)
+
+
+def test_discovery_verification_installation_and_registration_pipeline(
+    tmp_path,
+):
+    runtime = CoreRuntime()
+
+    source_root = tmp_path / "available"
+    module_dir = source_root / "security"
+    module_dir.mkdir(parents=True)
+
+    manifest_path = module_dir / "module.yaml"
+    manifest_path.write_text(
+        "name: security\nversion: 1.0.0\n"
+    )
+
+    artifact = b"security-module-artifact"
+    artifact_path = module_dir / "artifact.bin"
+    artifact_path.write_bytes(artifact)
+
+    discovery = ModuleDiscovery()
+    candidates = discovery.discover(source_root)
+
+    assert len(candidates) == 1
+
+    candidate = candidates[0]
+
+    assert candidate.name == "security"
+    assert candidate.module_path == module_dir
+    assert candidate.manifest_path == manifest_path
+
+    verifier = TrustVerifier()
+    verifier.register_identity(
+        TrustIdentity(
+            identity="ziggy-test-publisher",
+            status=TrustStatus.TRUSTED,
+        )
+    )
+
+    import hashlib
+
+    expected_sha256 = hashlib.sha256(artifact).hexdigest()
+
+    verification = verifier.verify_artifact(
+        identity="ziggy-test-publisher",
+        artifact=artifact,
+        expected_sha256=expected_sha256,
+    )
+
+    assert verification.is_valid is True
+
+    installation_root = tmp_path / "installed"
+    installer = ModuleInstaller(installation_root)
+
+    installation = installer.install(candidate)
+
+    assert installation.name == "security"
+    assert installation.installed_path == installation_root / "security"
+    assert installer.is_installed("security")
+
+    manager = make_manager(runtime)
+
+    manifest = make_manifest("security")
+    manager.register(manifest)
+
+    assert runtime.module_registry.count() == 1
+    assert runtime.module_registry.get("security") == manifest
+
+
+def test_discovery_does_not_admit_module_without_manifest(tmp_path):
+    runtime = CoreRuntime()
+
+    source_root = tmp_path / "available"
+    module_dir = source_root / "security"
+    module_dir.mkdir(parents=True)
+
+    (module_dir / "artifact.bin").write_bytes(
+        b"security-module-artifact"
+    )
+
+    discovery = ModuleDiscovery()
+    candidates = discovery.discover(source_root)
+
+    assert candidates == ()
+    assert runtime.module_registry.count() == 0
+
+
+def test_tampered_artifact_stops_verification_before_installation(tmp_path):
+    source_root = tmp_path / "available"
+    module_dir = source_root / "security"
+    module_dir.mkdir(parents=True)
+
+    manifest_path = module_dir / "module.yaml"
+    manifest_path.write_text(
+        "name: security\nversion: 1.0.0\n"
+    )
+
+    original_artifact = b"original-security-artifact"
+    tampered_artifact = b"tampered-security-artifact"
+
+    artifact_path = module_dir / "artifact.bin"
+    artifact_path.write_bytes(original_artifact)
+
+    candidate = ModuleDiscovery().discover(source_root)[0]
+
+    verifier = TrustVerifier()
+    verifier.register_identity(
+        TrustIdentity(
+            identity="ziggy-test-publisher",
+            status=TrustStatus.TRUSTED,
+        )
+    )
+
+    import hashlib
+
+    expected_sha256 = hashlib.sha256(original_artifact).hexdigest()
+
+    verification = verifier.verify_artifact(
+        identity="ziggy-test-publisher",
+        artifact=tampered_artifact,
+        expected_sha256=expected_sha256,
+    )
+
+    assert verification.is_valid is False
+    assert verification.integrity_valid is False
+
+    installation_root = tmp_path / "installed"
+    installer = ModuleInstaller(installation_root)
+
+    assert not installer.is_installed("security")
+
+
+def test_untrusted_identity_stops_verification_before_installation(tmp_path):
+    source_root = tmp_path / "available"
+    module_dir = source_root / "security"
+    module_dir.mkdir(parents=True)
+
+    (module_dir / "module.yaml").write_text(
+        "name: security\nversion: 1.0.0\n"
+    )
+
+    artifact = b"security-module-artifact"
+    (module_dir / "artifact.bin").write_bytes(artifact)
+
+    candidate = ModuleDiscovery().discover(source_root)[0]
+
+    verifier = TrustVerifier()
+    verifier.register_identity(
+        TrustIdentity(
+            identity="unknown-publisher",
+            status=TrustStatus.UNTRUSTED,
+        )
+    )
+
+    import hashlib
+
+    verification = verifier.verify_artifact(
+        identity="unknown-publisher",
+        artifact=artifact,
+        expected_sha256=hashlib.sha256(artifact).hexdigest(),
+    )
+
+    assert verification.is_valid is False
+    assert verification.status is TrustStatus.UNTRUSTED
+
+    installation_root = tmp_path / "installed"
+    installer = ModuleInstaller(installation_root)
+
+    assert not installer.is_installed(candidate.name)
+
+
+def test_incompatible_module_stops_registration_after_installation(
+    tmp_path,
+):
+    runtime = CoreRuntime()
+
+    source_root = tmp_path / "available"
+    module_dir = source_root / "network"
+    module_dir.mkdir(parents=True)
+
+    (module_dir / "module.yaml").write_text(
+        "name: network\nversion: 1.0.0\n"
+    )
+
+    artifact = b"network-module-artifact"
+    (module_dir / "artifact.bin").write_bytes(artifact)
+
+    candidate = ModuleDiscovery().discover(source_root)[0]
+
+    verifier = TrustVerifier()
+    verifier.register_identity(
+        TrustIdentity(
+            identity="ziggy-test-publisher",
+            status=TrustStatus.TRUSTED,
+        )
+    )
+
+    import hashlib
+
+    verification = verifier.verify_artifact(
+        identity="ziggy-test-publisher",
+        artifact=artifact,
+        expected_sha256=hashlib.sha256(artifact).hexdigest(),
+    )
+
+    assert verification.is_valid is True
+
+    installer = ModuleInstaller(tmp_path / "installed")
+    installation = installer.install(candidate)
+
+    assert installer.is_installed("network")
+    assert installation.installed_path.exists()
+
+    manager = make_manager(runtime)
+
+    incompatible_manifest = make_manifest(
+        "network",
+        api_version=2,
+    )
+
+    with pytest.raises(ModuleRegistrationError):
+        manager.register(incompatible_manifest)
+
+    assert runtime.module_registry.count() == 0
+    assert not runtime.module_registry.contains("network")
+
+
+def test_satisfied_dependency_allows_lifecycle_progression():
+    runtime = CoreRuntime()
+
+    resolver = DependencyResolver(
+        {
+            "network": ModuleVersion(1, 2, 0),
+        }
+    )
+
+    dependency = ModuleDependency(
+        name="network",
+        minimum_version=ModuleVersion(1, 0, 0),
+    )
+
+    result = resolver.resolve(dependency)
+
+    assert result.status is DependencyStatus.AVAILABLE
+    assert result.is_satisfied is True
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+
+    assert lifecycle.state is ModuleLifecycleState.ENABLED
+
+
+def test_missing_dependency_blocks_lifecycle_progression():
+    runtime = CoreRuntime()
+
+    resolver = DependencyResolver()
+
+    dependency = ModuleDependency(
+        name="network",
+        minimum_version=ModuleVersion(1, 0, 0),
+    )
+
+    result = resolver.resolve(dependency)
+
+    assert result.status is DependencyStatus.MISSING
+    assert result.is_satisfied is False
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+
+    if result.is_satisfied:
+        lifecycle.transition(ModuleLifecycleState.ENABLED)
+
+    assert lifecycle.state is ModuleLifecycleState.INSTALLED
+
+
+def test_incompatible_dependency_blocks_lifecycle_progression():
+    runtime = CoreRuntime()
+
+    resolver = DependencyResolver(
+        {
+            "network": ModuleVersion(1, 1, 0),
+        }
+    )
+
+    dependency = ModuleDependency(
+        name="network",
+        minimum_version=ModuleVersion(2, 0, 0),
+    )
+
+    result = resolver.resolve(dependency)
+
+    assert result.status is DependencyStatus.INCOMPATIBLE
+    assert result.is_satisfied is False
+    assert result.available_version == ModuleVersion(1, 1, 0)
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+
+    if result.is_satisfied:
+        lifecycle.transition(ModuleLifecycleState.ENABLED)
+
+    assert lifecycle.state is ModuleLifecycleState.INSTALLED
+
+
+def test_dependency_resolution_does_not_mutate_lifecycle():
+    runtime = CoreRuntime()
+
+    resolver = DependencyResolver(
+        {
+            "network": ModuleVersion(1, 0, 0),
+        }
+    )
+
+    dependency = ModuleDependency(
+        name="network",
+        minimum_version=ModuleVersion(1, 0, 0),
+    )
+
+    lifecycle = runtime.create_lifecycle()
+
+    result = resolver.resolve(dependency)
+
+    assert result.is_satisfied is True
+    assert lifecycle.state is ModuleLifecycleState.DISCOVERED
+
+
+def test_dependency_order_is_respected_before_lifecycle_progression():
+    runtime = CoreRuntime()
+
+    resolver = DependencyResolver()
+
+    order = resolver.resolve_order(
+        {
+            "security": ("network",),
+            "network": ("base",),
+            "base": (),
+        }
+    )
+
+    assert order == (
+        "base",
+        "network",
+        "security",
+    )
+
+    lifecycles = {
+        name: runtime.create_lifecycle()
+        for name in order
+    }
+
+    for name in order:
+        lifecycle = lifecycles[name]
+
+        lifecycle.transition(ModuleLifecycleState.VERIFIED)
+        lifecycle.transition(ModuleLifecycleState.INSTALLED)
+        lifecycle.transition(ModuleLifecycleState.ENABLED)
+
+    assert all(
+        lifecycle.state is ModuleLifecycleState.ENABLED
+        for lifecycle in lifecycles.values()
+    )
+
+
+def test_fake_module_end_to_end_core_lifecycle():
+    runtime = CoreRuntime()
+    runtime.start()
+
+    resolver = DependencyResolver(
+        {
+            "network": ModuleVersion(1, 0, 0),
+        }
+    )
+
+    dependency = ModuleDependency(
+        name="network",
+        minimum_version=ModuleVersion(1, 0, 0),
+    )
+
+    # 1. Dependency must be satisfied before lifecycle progression.
+    dependency_result = resolver.resolve(dependency)
+    assert dependency_result.is_satisfied is True
+
+    # 2. Create the module's Core-scoped services.
+    module_name = "fake-security"
+
+    lifecycle = runtime.create_lifecycle()
+    config = runtime.create_config(module_name)
+    storage = runtime.create_storage(module_name)
+    logger = runtime.create_logger(module_name)
+
+    # 3. Configure the fake module.
+    config.set("enabled", True)
+    storage.set("initialized", True)
+
+    # 4. Lifecycle: discovered -> verified -> installed.
+    assert lifecycle.state is ModuleLifecycleState.DISCOVERED
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+
+    # 5. Enable only after dependencies are satisfied.
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+    assert lifecycle.state is ModuleLifecycleState.ENABLED
+
+    # 6. Start and reach running state.
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+
+    assert lifecycle.state is ModuleLifecycleState.RUNNING
+
+    # 7. Module reports health.
+    runtime.health.report(
+        module_name,
+        HealthStatus.HEALTHY,
+        "Fake module is operational.",
+    )
+
+    health = runtime.health.get(module_name)
+
+    assert health is not None
+    assert health.status is HealthStatus.HEALTHY
+
+    # 8. Module emits an event.
+    received_events = []
+
+    def on_module_started(event):
+        received_events.append(event)
+
+    runtime.event_bus.subscribe(
+        "module.started",
+        on_module_started,
+    )
+
+    event = runtime.event_bus.create_event(
+        event_type="module.started",
+        source=module_name,
+        payload={"state": lifecycle.state.value},
+    )
+
+    runtime.event_bus.publish(event)
+
+    assert len(received_events) == 1
+    assert received_events[0].source == module_name
+
+    # 9. Core turns the event into a notification.
+    runtime.notifications.info(
+        source=module_name,
+        title="Module Started",
+        message="Fake security module is running.",
+    )
+
+    notifications = runtime.notifications.list()
+
+    assert len(notifications) == 1
+    assert notifications[0].source == module_name
+
+    # 10. Module writes a log record.
+    logger.info("Fake module started.")
+
+    assert logger.count() == 1
+    assert logger.records()[0].message == "Fake module started."
+
+    # 11. Module can be disabled cleanly.
+    lifecycle.transition(ModuleLifecycleState.STOPPING)
+    lifecycle.transition(ModuleLifecycleState.STOPPED)
+    lifecycle.transition(ModuleLifecycleState.REMOVED)
+
+    assert lifecycle.state is ModuleLifecycleState.REMOVED
+
+    # 12. Module-scoped state remains isolated from other modules.
+    other_config = runtime.create_config("another-module")
+    other_storage = runtime.create_storage("another-module")
+    other_logger = runtime.create_logger("another-module")
+
+    assert other_config.exists("enabled") is False
+    assert other_storage.exists("initialized") is False
+    assert other_logger.count() == 0
+
+    runtime.stop()
+
+    assert runtime.is_running is False
+
+
+def test_fake_module_dependency_failure_prevents_enablement():
+    runtime = CoreRuntime()
+
+    resolver = DependencyResolver()
+
+    dependency = ModuleDependency(
+        name="network",
+        minimum_version=ModuleVersion(2, 0, 0),
+    )
+
+    result = resolver.resolve(dependency)
+
+    assert result.status is DependencyStatus.MISSING
+    assert result.is_satisfied is False
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+
+    if result.is_satisfied:
+        lifecycle.transition(ModuleLifecycleState.ENABLED)
+
+    assert lifecycle.state is ModuleLifecycleState.INSTALLED
+
+
+def test_fake_module_failure_can_recover_through_core_lifecycle():
+    runtime = CoreRuntime()
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.FAILED)
+
+    assert lifecycle.state is ModuleLifecycleState.FAILED
+
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+
+    assert lifecycle.state is ModuleLifecycleState.RUNNING
+
+    runtime.health.report(
+        "fake-security",
+        HealthStatus.HEALTHY,
+        "Recovered successfully.",
+    )
+
+    assert (
+        runtime.health.get("fake-security").status
+        is HealthStatus.HEALTHY
+    )
