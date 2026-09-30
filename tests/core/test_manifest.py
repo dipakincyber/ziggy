@@ -133,3 +133,86 @@ def test_module_name_cannot_contain_whitespace():
                 minimum_core_version=CoreAPIVersion(1, 0, 0),
             ),
         )
+
+
+def test_manifest_rejects_non_string_identity_fields():
+    base = {
+        "name": "security",
+        "version": "1.0.0",
+        "author": "Dipak Yadav",
+        "description": "Test module",
+        "compatibility": ModuleCompatibility(
+            api_version=1,
+            minimum_core_version=CoreAPIVersion(1, 0, 0),
+        ),
+    }
+
+    for field in ("name", "version", "author", "description"):
+        invalid = dict(base)
+        invalid[field] = None
+
+        with pytest.raises(ValueError):
+            ModuleManifest(**invalid)
+
+
+def test_manifest_rejects_whitespace_only_identity_fields():
+    base = {
+        "name": "security",
+        "version": "1.0.0",
+        "author": "Dipak Yadav",
+        "description": "Test module",
+        "compatibility": ModuleCompatibility(
+            api_version=1,
+            minimum_core_version=CoreAPIVersion(1, 0, 0),
+        ),
+    }
+
+    for field in ("name", "version", "author", "description"):
+        invalid = dict(base)
+        invalid[field] = "   "
+
+        with pytest.raises(ValueError):
+            ModuleManifest(**invalid)
+
+
+def test_module_name_rejects_path_traversal_forms():
+    base = {
+        "version": "1.0.0",
+        "author": "Dipak Yadav",
+        "description": "Test module",
+        "compatibility": ModuleCompatibility(
+            api_version=1,
+            minimum_core_version=CoreAPIVersion(1, 0, 0),
+        ),
+    }
+
+    for name in ("../security", "..\\security", "security/../other"):
+        with pytest.raises(ValueError):
+            ModuleManifest(name=name, **base)
+
+
+def test_module_manifest_is_immutable():
+    manifest = make_manifest()
+
+    with pytest.raises(AttributeError):
+        manifest.name = "changed"
+
+
+def test_module_compatibility_is_immutable():
+    compatibility = ModuleCompatibility(
+        api_version=1,
+        minimum_core_version=CoreAPIVersion(1, 0, 0),
+    )
+
+    with pytest.raises(AttributeError):
+        compatibility.api_version = 2
+
+
+def test_module_events_are_immutable():
+    events = ModuleEvents(
+        publishes=("security.scan.completed",),
+        subscribes=("process.started",),
+    )
+
+    with pytest.raises(AttributeError):
+        events.publishes = ()

@@ -72,17 +72,21 @@ class ModuleManifest:
     def _validate_identity(self) -> None:
         """Validate the module's basic identity fields."""
 
-        if not self.name.strip():
-            raise ValueError("Module name cannot be empty.")
+        for field_name, value in (
+            ("name", self.name),
+            ("version", self.version),
+            ("author", self.author),
+            ("description", self.description),
+        ):
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"Module {field_name} must be a string."
+                )
 
-        if not self.version.strip():
-            raise ValueError("Module version cannot be empty.")
-
-        if not self.author.strip():
-            raise ValueError("Module author cannot be empty.")
-
-        if not self.description.strip():
-            raise ValueError("Module description cannot be empty.")
+            if not value.strip():
+                raise ValueError(
+                    f"Module {field_name} cannot be empty."
+                )
 
         if "/" in self.name or "\\" in self.name:
             raise ValueError("Module name cannot contain path separators.")
