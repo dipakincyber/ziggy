@@ -8,9 +8,11 @@ Ziggy is an open-source Linux system intelligence and control platform designed 
 
 ## Status
 
-🚧 **Active development — architecture rebuild**
+🟢 **Core foundation complete**
 
-This repository contains the new Ziggy architecture, being built from the ground up with a modular Core designed to support independent Ziggy modules.
+The Ziggy Core has been built, integrated, tested, and hardened.
+
+The Core now provides the stable foundation required for independently managed Ziggy modules. The next stage of development is building the actual modules that use this foundation.
 
 The project is intentionally being developed piece by piece rather than as a single large implementation.
 
@@ -41,20 +43,26 @@ It is intended to make Linux easier to understand and control.
 Ziggy is built around a stable Core.
 
 ```text
-                         ZIGGY
-                           │
-                         CORE
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-       Security         Network          Sandbox
-          │                │                │
-       Learning         Sherlock        Device Guardian
-          │                │                │
-          └────────────────┼────────────────┘
-                           │
-                     Future Modules
-```
+                              ZIGGY
+                                │
+                                │
+                         ┌──────▼──────┐
+                         │     CORE    │
+                         └──────┬──────┘
+                                │
+              ┌─────────────────┼─────────────────┐
+              │                 │                 │
+              ▼                 ▼                 ▼
+          SECURITY          MONITORING         NETWORK
+              │                 │                 │
+              ▼                 ▼                 ▼
+          Security          System/          Network
+           Modules          Activity         Modules
+                           Modules
+              │                 │                 │
+              └─────────────────┼─────────────────┘
+                                │
+                         Future Modules
 
 The Core provides shared infrastructure and stable APIs.
 
@@ -64,33 +72,104 @@ Core does not depend on optional modules.
 
 This allows Ziggy to grow without turning the Core into one giant collection of unrelated features.
 
-## Core
+Core
 
-The Ziggy Core is responsible for platform-level functionality such as:
+The Ziggy Core provides the platform infrastructure required by modules.
 
-* module lifecycle
-* module compatibility
-* module discovery and management
-* permissions and capabilities
-* event infrastructure
-* configuration
-* storage
-* logging
-* cryptographic services
-* policy enforcement
-* command registration
-* module trust and verification
-* shared APIs
-* health monitoring
-* lifecycle management
+Module System
+Core API versioning
+Module manifests
+Compatibility checking
+Module registry
+Module admission/management
+Module lifecycle
+Module discovery
+Module installation
+Dependency resolution
+Security & Trust
+Permissions and capabilities
+Policy decisions
+Cryptographic services
+Module integrity verification
+Trust identity management
+Core Services
+Event bus
+Configuration API
+Storage API
+Logging API
+Health monitoring
+Recovery management
+Notification API
+Export API
+Commands & Runtime
+Command registry
+Command dispatcher
+Core runtime
+Module-scoped services
+Cross-component integration
 
-The Core is being designed as a stable platform for future Ziggy modules.
+The Core deliberately does not contain module-specific functionality.
 
-## Development Philosophy
+It provides the contracts and infrastructure that future modules build on.
+
+Module Lifecycle
+
+Ziggy Core defines a controlled module lifecycle:
+
+DISCOVERED
+    ↓
+VERIFIED
+    ↓
+INSTALLED
+    ↓
+ENABLED
+    ↓
+STARTING
+    ↓
+RUNNING
+    │
+    ├──→ UNHEALTHY
+    │
+    └──→ STOPPING
+              ↓
+           STOPPED
+              ↓
+           REMOVED
+
+Modules can also enter failure and recovery paths without requiring the Core to contain module-specific logic.
+
+The lifecycle system is intentionally separate from module execution.
+
+Module Architecture
+
+A future Ziggy module is expected to interact with Core through defined interfaces rather than directly coupling itself to unrelated Core internals.
+
+Conceptually:
+
+             Ziggy Module
+                  │
+        ┌─────────┼─────────┐
+        │         │         │
+      Config   Storage    Logger
+        │         │         │
+        └─────────┼─────────┘
+                  │
+               Core API
+                  │
+        ┌─────────┼─────────┐
+        │         │         │
+      Events   Commands   Policy
+        │         │         │
+        └─────────┼─────────┘
+                  │
+             Ziggy Core
+
+This separation is one of the central architectural principles of Ziggy.
+
+Development Philosophy
 
 Ziggy is being built using a deliberate engineering process:
 
-```text
 Design
   ↓
 Contract
@@ -108,88 +187,151 @@ Fix
 Document
   ↓
 Commit
-```
 
 The goal is not to build Ziggy as quickly as possible.
 
 The goal is to build a Core that is difficult to break, easy for modules to integrate with, and stable enough to support Ziggy for years.
 
-## Current Development
+Core Development — Complete
 
-Current Core foundation:
+The current Core foundation has been implemented and tested:
 
-* [x] Core API versioning
-* [x] Module manifest
-* [x] Compatibility checker
-* [x] Module registry
-* [ ] Module manager
-* [ ] Module lifecycle
-* [ ] Permission system
-* [ ] Event system
-* [ ] Storage API
-* [ ] Configuration API
-* [ ] Logging API
-* [ ] Policy API
-* [ ] Crypto API
-* [ ] Module verification
-* [ ] Module installation system
-* [ ] Module health monitoring
+ Core API versioning
+ Module manifest
+ Compatibility checker
+ Module registry
+ Module manager
+ Module lifecycle
+ Permission system
+ Event system
+ Configuration API
+ Storage API
+ Logging API
+ Policy engine
+ Crypto API
+ Trust and integrity verification
+ Module discovery
+ Module installation
+ Dependency resolver
+ Command registry
+ Command dispatcher
+ Health monitoring
+ Recovery manager
+ Notification API
+ Export API
+ Core runtime
+ Cross-component integration
+ Fake-module end-to-end lifecycle testing
+ Core boundary hardening
+Core Test Status
 
-More components will be added as the architecture develops.
+443 tests passing
 
-## Project Structure
+Run the Core test suite:
 
-```text
+python3 -m pytest tests/core/
+
+The Core is now treated as the stable foundation for the next phase of Ziggy development.
+
+Project Structure
 ziggy/
 ├── core/
 │   ├── api/
+│   ├── commands/
+│   ├── compatibility/
+│   ├── config/
+│   ├── crypto/
+│   ├── dependencies/
+│   ├── discovery/
+│   ├── dispatch/
+│   ├── events/
+│   ├── export/
+│   ├── health/
+│   ├── installation/
+│   ├── logging/
 │   ├── modules/
-│   └── compatibility/
+│   ├── notifications/
+│   ├── policy/
+│   ├── recovery/
+│   ├── runtime/
+│   ├── storage/
+│   └── trust/
 │
 ├── tests/
 │   └── core/
 │
 ├── CORE_SKILL.md
-├── LICENSE
 ├── README.md
 └── .gitignore
-```
 
-The structure will evolve as the Core architecture develops.
+The project structure will evolve as Ziggy's modules and user-facing components are developed.
 
-## Testing
+What's Next
 
-Core components are developed with automated tests.
+With the Core foundation complete, development can move upward into Ziggy's actual capabilities.
 
-Run the Core test suite:
+Planned areas include:
 
-```bash
-python3 -m pytest tests/core/
-```
+Security modules
+System monitoring
+Network intelligence
+Application activity monitoring
+Linux learning tools
+Sandboxing and isolation
+Incident investigation
+Automation
+User-facing CLI and interfaces
 
-The project aims to keep the Core continuously testable as new components are introduced.
+These capabilities will be implemented as modules where appropriate rather than being hardcoded into Core.
 
-## Open Source
+Security Philosophy
 
-Ziggy is open source and licensed under the MIT License.
+Ziggy is intended to improve security without making false security guarantees.
 
-Contributions, ideas, experiments, modules, documentation, testing, and constructive criticism are welcome.
+Core provides mechanisms such as:
 
-However, inclusion in the official Ziggy ecosystem is subject to review.
+permission modeling
+policy decisions
+integrity verification
+trust management
+health reporting
+controlled module lifecycle
 
-**Contribution is appreciated; inclusion is not guaranteed.**
+These mechanisms do not automatically make a module, system, or operation secure.
 
-## Author
+Security decisions remain explicit and observable.
 
-**Dipak Yadav**
+Ziggy should help users understand what is happening rather than hide important system behavior behind a black box.
+
+Open Source
+
+Ziggy is an independent open-source project.
+
+The project welcomes:
+
+contributions
+ideas
+experiments
+modules
+documentation
+testing
+constructive criticism
+
+Inclusion in the official Ziggy ecosystem is subject to review.
+
+Contribution is appreciated; inclusion is not guaranteed.
+
+Author
+
+Dipak Yadav
 Creator & Developer
 
-Email: `dipak.cybersec@gmail.com`
+Email: dipak.cybersec@gmail.com
 
 Ziggy is an independent open-source project created and developed by Dipak Yadav.
 
-## Project Principle
+Project Principle
 
-> **Linux, without the guesswork.**
+Linux, without the guesswork.
 
 Ziggy exists to make Linux more understandable — not to make users dependent on Ziggy.
