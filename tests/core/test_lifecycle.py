@@ -1,3 +1,5 @@
+import pytest
+
 from core.modules.lifecycle import (
     InvalidLifecycleTransitionError,
     ModuleLifecycle,
@@ -140,3 +142,21 @@ def test_disabled_module_can_be_enabled():
     lifecycle.transition(ModuleLifecycleState.ENABLED)
 
     assert lifecycle.state == ModuleLifecycleState.ENABLED
+
+
+def test_lifecycle_rejects_invalid_target_state_type():
+    lifecycle = ModuleLifecycle()
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        lifecycle.transition("running")
+
+
+def test_removed_lifecycle_cannot_transition():
+    lifecycle = ModuleLifecycle(
+        initial_state=ModuleLifecycleState.REMOVED
+    )
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        lifecycle.transition(ModuleLifecycleState.DISCOVERED)
+
+    assert lifecycle.state is ModuleLifecycleState.REMOVED

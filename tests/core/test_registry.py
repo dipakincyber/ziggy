@@ -120,3 +120,32 @@ def test_snapshot_cannot_modify_registry():
         snapshot["network"] = make_manifest("network")
 
     assert registry.count() == 1
+
+
+def test_registry_snapshot_cannot_mutate_registry():
+    registry = ModuleRegistry()
+
+    manifest = make_manifest("security")
+    registry.register(manifest)
+
+    snapshot = registry.snapshot()
+
+    with pytest.raises(TypeError):
+        snapshot["other"] = manifest
+
+    assert registry.count() == 1
+    assert registry.contains("security")
+
+
+def test_registry_list_is_deterministically_sorted():
+    registry = ModuleRegistry()
+
+    registry.register(make_manifest("zeta"))
+    registry.register(make_manifest("alpha"))
+    registry.register(make_manifest("middle"))
+
+    assert [manifest.name for manifest in registry.list()] == [
+        "alpha",
+        "middle",
+        "zeta",
+    ]

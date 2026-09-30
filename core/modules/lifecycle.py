@@ -106,6 +106,9 @@ class ModuleLifecycle:
     ) -> bool:
         """Return whether a transition to target_state is allowed."""
 
+        if not isinstance(target_state, ModuleLifecycleState):
+            return False
+
         return target_state in self._VALID_TRANSITIONS[self._state]
 
     def transition(
@@ -118,6 +121,11 @@ class ModuleLifecycle:
         Raises InvalidLifecycleTransitionError when the transition
         is not permitted.
         """
+
+        if not isinstance(target_state, ModuleLifecycleState):
+            raise InvalidLifecycleTransitionError(
+                "Target state must be a ModuleLifecycleState."
+            )
 
         if not self.can_transition(target_state):
             raise InvalidLifecycleTransitionError(
