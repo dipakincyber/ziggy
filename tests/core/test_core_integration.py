@@ -3,10 +3,13 @@ import pytest
 from core.api import get_core_api_version
 from core.commands import CommandDefinition
 from core.dispatch import DispatchRequest
+from core.health import HealthStatus
+from core.modules.lifecycle import ModuleLifecycleState
 from core.modules.manager import ModuleManager, ModuleRegistrationError
 from core.modules.manifest import ModuleCompatibility, ModuleManifest
 from core.modules.permissions import ModulePermission
 from core.policy import PolicyDecision, PolicyRequest, PolicyRule
+from core.recovery import RecoveryAction, RecoveryRequest
 from core.runtime import CoreRuntime
 
 
@@ -580,3 +583,144 @@ def test_unregistering_command_does_not_remove_permission_or_policy_state():
             resource="/tmp/evidence.txt",
         )
     ) == PolicyDecision.ALLOW
+
+
+def test_runtime_lifecycle_and_health_track_running_module():
+    runtime = CoreRuntime()
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+
+    report = runtime.health.report(
+        module="security",
+        status=HealthStatus.HEALTHY,
+        message="Security module is operating normally.",
+    )
+
+    assert lifecycle.state == ModuleLifecycleState.RUNNING
+    assert report.module == "security"
+    assert report.status == HealthStatus.HEALTHY
+    assert runtime.health.get("security") == report
+
+
+def test_runtime_unhealthy_health_can_correspond_to_unhealthy_lifecycle():
+    runtime = CoreRuntime()
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+
+    report = runtime.health.report(
+        module="security",
+        status=HealthStatus.UNHEALTHY,
+        message="Security module failed its health check.",
+    )
+
+    lifecycle.transition(ModuleLifecycleState.UNHEALTHY)
+
+    assert report.status == HealthStatus.UNHEALTHY
+    assert lifecycle.state == ModuleLifecycleState.UNHEALTHY
+
+
+def test_runtime_unhealthy_module_can_request_restart_recovery():
+    runtime = CoreRuntime()
+
+    runtime.health.report(
+        module="security",
+        status=HealthStatus.UNHEALTHY,
+        message="Security module failed its health check.",
+    )
+
+    recovery = runtime.recovery.request(
+        RecoveryRequest(
+            module="security",
+            action=RecoveryAction.RESTART,
+            reason="Health check reported the module as unhealthy.",
+        )
+    )
+
+    assert recovery.module == "security"
+    assert recovery.action == RecoveryAction.RESTART
+    assert recovery.approved is True
+    assert runtime.recovery.count() == 1
+
+
+def test_runtime_recovery_decision_does_not_automatically_change_lifecycle():
+    runtime = CoreRuntime()
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+    lifecycle.transition(ModuleLifecycleState.UNHEALTHY)
+
+    recovery = runtime.recovery.request(
+        RecoveryRequest(
+            module="security",
+            action=RecoveryAction.RESTART,
+            reason="Restart requested after health failure.",
+        )
+    )
+
+    assert recovery.approved is True
+    assert lifecycle.state == ModuleLifecycleState.UNHEALTHY
+
+    lifecycle.transition(ModuleLifecycleState.STOPPING)
+    lifecycle.transition(ModuleLifecycleState.STOPPED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+
+    assert lifecycle.state == ModuleLifecycleState.STARTING
+
+
+def test_runtime_recovery_history_survives_module_recovery():
+    runtime = CoreRuntime()
+
+    lifecycle = runtime.create_lifecycle()
+
+    lifecycle.transition(ModuleLifecycleState.VERIFIED)
+    lifecycle.transition(ModuleLifecycleState.INSTALLED)
+    lifecycle.transition(ModuleLifecycleState.ENABLED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+    lifecycle.transition(ModuleLifecycleState.UNHEALTHY)
+
+    runtime.health.report(
+        module="security",
+        status=HealthStatus.UNHEALTHY,
+        message="Initial health failure.",
+    )
+
+    recovery = runtime.recovery.request(
+        RecoveryRequest(
+            module="security",
+            action=RecoveryAction.RESTART,
+            reason="Restart after initial health failure.",
+        )
+    )
+
+    lifecycle.transition(ModuleLifecycleState.STOPPING)
+    lifecycle.transition(ModuleLifecycleState.STOPPED)
+    lifecycle.transition(ModuleLifecycleState.STARTING)
+    lifecycle.transition(ModuleLifecycleState.RUNNING)
+
+    runtime.health.report(
+        module="security",
+        status=HealthStatus.HEALTHY,
+        message="Module recovered successfully.",
+    )
+
+    assert lifecycle.state == ModuleLifecycleState.RUNNING
+    assert runtime.health.get("security").status == HealthStatus.HEALTHY
+    assert runtime.recovery.decisions() == (recovery,)
